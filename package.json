@@ -1,0 +1,49 @@
+{
+  "name": "gatsby-plugin-advanced-sitemap-large",
+  "version": "1.0.0",
+  "author": "Michiel Bouw",
+  "license": "MIT",
+  "main": "index.js",
+  "keywords": [
+    "gatsby",
+    "gatsby-plugin"
+  ],
+  "engines": {
+    "node": ">= 12.19.0"
+  },
+  "scripts": {
+    "lint": "eslint --ext .js -c .eslintrc.js --cache src/**",
+    "build": "babel src --out-dir .",
+    "watch": "babel -w src --out-dir .",
+    "test": "jest ."
+  },
+  "peerDependencies": {
+    "gatsby": "^4.0.0",
+    "react": "^16.9.0 || ^17.0.0 || ^18.0.0",
+    "react-dom": "^16.9.0 || ^17.0.0 || ^18.0.0"
+  },
+  "devDependencies": {
+    "@babel/cli": "7.14.3",
+    "@babel/core": "7.14.3",
+    "babel-eslint": "10.1.0",
+    "babel-jest": "26.6.3",
+    "babel-preset-gatsby-package": "1.5.0",
+    "cross-env": "7.0.3",
+    "eslint": "7.30.0",
+    "eslint-plugin-ghost": "2.5.0",
+    "eslint-plugin-jest": "24.3.6",
+    "eslint-plugin-react": "7.24.0",
+    "gatsby": "3.5.0",
+    "jest": "26.6.3",
+    "react": "17.0.2",
+    "react-dom": "17.0.2"
+  },
+  "dependencies": {
+    "@babel/runtime": "7.14.0",
+    "fs-extra": "10.1.0",
+    "lodash": "4.17.21",
+    "moment": "2.29.1",
+    "pify": "5.0.0",
+    "xml": "^1.0.1"
+  }
+}

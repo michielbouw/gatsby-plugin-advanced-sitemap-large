@@ -44,10 +44,75 @@ const copyStylesheet = async ({ siteUrl, pathPrefix, indexOutput }) => {
 };
 
 /**
+ * [experimental] Performance improvements for large sites:
+ * - split execution of single queries into pages with max. items to prevent memory issues (requires defining the `query` as key|value pairs in an object)
+ */
+const splitQueryInSmallerBatches = async (
+    handler,
+    activity,
+    { queryKey, queryString },
+    splitQueryPageSize = 100
+) => {
+    activity.setStatus("[experimental] run queries in smaller batches");
+
+    try {
+        const itemsPerPage = splitQueryPageSize;
+        let currentPage = 0;
+
+        const fetchPages = async (
+            params = { limit: itemsPerPage, skip: 0 }
+        ) => {
+            const queryParams = params;
+
+            activity.setStatus(
+                `[experimental] run query "${queryKey}" batch #${
+                    currentPage + 1
+                }`
+            );
+
+            const tempData = await handler(queryString, queryParams).then(
+                (r) => r.data?.[queryKey]
+            );
+
+            if (tempData?.pageInfo?.hasNextPage) {
+                currentPage = currentPage + 1;
+                const tempDataMore = await fetchPages({
+                    ...queryParams,
+                    skip: currentPage * itemsPerPage,
+                });
+                if (
+                    tempData?.edges &&
+                    tempData.edges.length &&
+                    tempDataMore?.edges &&
+                    tempDataMore.edges.length
+                ) {
+                    tempData.edges = tempData.edges.concat(tempDataMore.edges);
+                }
+            }
+
+            return tempData;
+        };
+
+        return await fetchPages();
+    } catch (_e) {
+        activity.setStatus(
+            "[experimental] failed running queries in smaller batches, trying without batching"
+        );
+        // Fallback to general function from `runQueriesSequentially`
+        return await handler(queryString).then((r) => r.data?.[queryKey]);
+    }
+};
+
+/**
  * Performance improvements for large sites:
  * - force sequential execution for multiple asynchronously queries for each mapping to prevent memory issues by defining the `query` as key|value pairs in an object
  */
-const runQueriesSequentially = async (handler, activity, queryObject) => {
+const runQueriesSequentially = async (
+    handler,
+    activity,
+    queryObject,
+    splitQueryPageSize
+) => {
     activity.setStatus("run queries sequentially");
 
     try {
@@ -62,9 +127,26 @@ const runQueriesSequentially = async (handler, activity, queryObject) => {
         for (const item of queries) {
             activity.setStatus(`start run query "${item.queryKey}"`);
 
-            responsesObject[item.queryKey] = await handler(
-                item.queryString
-            ).then((r) => r.data?.[item.queryKey]);
+            if (
+                // Only continue with query splitting if `hasNextPage` key AND `$limit:` + `$skip:` parameter initialisation and useage is present in the querystring
+                item.queryString.indexOf("hasNextPage") > -1 &&
+                item.queryString.indexOf("$limit:") > -1 &&
+                item.queryString.indexOf("$skip:") > -1 &&
+                item.queryString.indexOf("limit: $limit") > -1 &&
+                item.queryString.indexOf("skip: $skip") > -1
+            ) {
+                responsesObject[item.queryKey] =
+                    await splitQueryInSmallerBatches(
+                        handler,
+                        activity,
+                        item,
+                        splitQueryPageSize
+                    );
+            } else {
+                responsesObject[item.queryKey] = await handler(
+                    item.queryString
+                ).then((r) => r.data?.[item.queryKey]);
+            }
 
             // wait 1 second before next call to prevent memory overload
             await new Promise((r) => setTimeout(r, 1000));
@@ -76,10 +158,19 @@ const runQueriesSequentially = async (handler, activity, queryObject) => {
     }
 };
 
-const runQuery = async (handler, activity, { query, mapping, exclude }) => {
+const runQuery = async (
+    handler,
+    activity,
+    { query, mapping, exclude, splitQueryPageSize }
+) => {
     let sources;
     if (typeof query === "object") {
-        sources = await runQueriesSequentially(handler, activity, query);
+        sources = await runQueriesSequentially(
+            handler,
+            activity,
+            query,
+            splitQueryPageSize
+        );
     } else {
         sources = await handler(query).then((r) => r.data);
     }
@@ -117,12 +208,17 @@ const runQuery = async (handler, activity, { query, mapping, exclude }) => {
                                 : node.slug.replace(/^\/|\/$/, "");
 
                         excludedRoute =
+                            typeof excludedRoute === "function" ||
                             typeof excludedRoute === "object"
                                 ? excludedRoute
                                 : excludedRoute.replace(/^\/|\/$/, "");
 
-                        // test if the passed regular expression is valid
-                        if (typeof excludedRoute === "object") {
+                        if (typeof excludedRoute === "function") {
+                            // test if the passed excludedRoute is a function
+                            const isNodeExcluded = excludedRoute(node);
+                            return isNodeExcluded;
+                        } else if (typeof excludedRoute === "object") {
+                            // test if the passed excludedRoute is a regular expression
                             let excludedRouteIsValidRegEx = true;
                             try {
                                 new RegExp(excludedRoute);

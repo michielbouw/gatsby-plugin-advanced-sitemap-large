@@ -7,9 +7,11 @@ Forked from: https://github.com/TryGhost/gatsby-plugin-advanced-sitemap
 Additional features for this package:
 
 -   Allow sending siteUrl in config: `siteUrl: string` OR include `site.siteMetadata.siteUrl` in the custom query
+-   Allow adding function as exclusion rule, using the node as value to determine if a url should be excluded or not
 -   Allow skip skipping default query in config: `skipDefaultQuery: true|false`
 -   Performance improvements for large sites:
     -   force sequential execution for multiple asynchronously queries for each mapping to prevent memory issues by defining the `query` as key|value pairs in an object
+    -   [experimental] split execution of single queries into pages with max. items (options: `splitQueryPageSize: 100`) to prevent memory issues (requires defining the `query` as key|value pairs in an object with single queries inside with params `limit: $limit` and `skip: $skip`)
 
 ## How to Use
 
@@ -95,6 +97,23 @@ plugins: [
             //         }
             //     }`,
             // },
+            // [experimental] optional: only works if using key|value pairs in an object to enable to enable sequential querying, requires the following syntax in your single queries:
+            //   query getContent($limit: Int, $skip: Int) {
+            //     allSitePage(
+            //       limit: $limit
+            //       skip: $skip
+            //   ) {
+            //     pageInfo {
+            //       hasNextPage
+            //     }
+            //     edges {
+            //       node {
+            //         ...
+            //       }
+            //     }
+            //   }
+            // [experimental] optional: only applies to using the above setup in query with skip and limit
+            splitQueryPageSize: 100,
             output: "/custom-sitemap.xml", // optional: the filepath and name to Index Sitemap. Defaults to '/sitemap.xml'.
             mapping: { // optional
                 // Each data type can be mapped to a predefined sitemap
@@ -123,6 +142,7 @@ plugins: [
                 `/offline-plugin-app-shell-fallback`,
                 `/my-excluded-page`,
                 /(\/)?hash-\S*/, // you can also pass valid RegExp to exclude internal tags for example
+                (node) => node.isExcluded, // you can also pass a function that gets the single node as input and returns a boolean to determine if the node should be excluded (true) or not (false)
             ],
             createLinkInHead: true, // optional: create a link in the `<head>` of your site
             addUncaughtPages: true, // optional: will fill up pages that are not caught by queries and mapping and list them under `sitemap-pages.xml`

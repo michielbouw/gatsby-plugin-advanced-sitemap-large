@@ -44,6 +44,82 @@ const copyStylesheet = async ({ siteUrl, pathPrefix, indexOutput }) => {
 };
 
 /**
+ * Returns edges that are
+ * - serialized if mapping has custom serializer
+ * - removed exclude if exclude options given
+ */
+const mappingEdgesSerializeAndExclude = (
+    edges,
+    sourceKey,
+    mappingSerializer,
+    exclude
+) => {
+    let responseEdges = edges;
+    // Check for custom serializer
+    if (typeof mappingSerializer === "function") {
+        if (responseEdges && Array.isArray(responseEdges)) {
+            const serializedEdges = mappingSerializer(responseEdges);
+
+            if (!Array.isArray(serializedEdges)) {
+                throw new Error(
+                    "Custom sitemap serializer must return an array"
+                );
+            }
+            responseEdges = serializedEdges;
+        }
+    }
+
+    // Removing excluded paths
+    if (responseEdges && responseEdges.length) {
+        responseEdges = responseEdges.filter(
+            ({ node }) =>
+                !exclude.some((excludedRoute) => {
+                    const sourceType = node.__typename
+                        ? `all${node.__typename}`
+                        : sourceKey;
+                    const slug =
+                        sourceType === "allMarkdownRemark" ||
+                        sourceType === "allMdx" ||
+                        node?.fields?.slug
+                            ? node.fields.slug.replace(/^\/|\/$/, "")
+                            : node.slug.replace(/^\/|\/$/, "");
+
+                    excludedRoute =
+                        typeof excludedRoute === "function" ||
+                        typeof excludedRoute === "object"
+                            ? excludedRoute
+                            : excludedRoute.replace(/^\/|\/$/, "");
+
+                    if (typeof excludedRoute === "function") {
+                        // test if the passed excludedRoute is a function
+                        const isNodeExcluded = excludedRoute(node);
+                        return isNodeExcluded;
+                    } else if (typeof excludedRoute === "object") {
+                        // test if the passed excludedRoute is a regular expression
+                        let excludedRouteIsValidRegEx = true;
+                        try {
+                            new RegExp(excludedRoute);
+                        } catch (e) {
+                            excludedRouteIsValidRegEx = false;
+                        }
+
+                        if (!excludedRouteIsValidRegEx) {
+                            throw new Error(
+                                "Excluded route is not a valid RegExp: ",
+                                excludedRoute
+                            );
+                        }
+
+                        return excludedRoute.test(slug);
+                    } else {
+                        return slug.indexOf(excludedRoute) >= 0;
+                    }
+                })
+        );
+    }
+};
+
+/**
  * [experimental] Performance improvements for large sites:
  * - split execution of single queries into pages with max. items to prevent memory issues (requires defining the `query` as key|value pairs in an object)
  */
@@ -51,7 +127,9 @@ const splitQueryInSmallerBatches = async (
     handler,
     activity,
     { queryKey, queryString },
-    splitQueryPageSize = 100
+    splitQueryPageSize = 100,
+    mappingSerializer,
+    exclude
 ) => {
     activity.setStatus("[experimental] run queries in smaller batches");
 
@@ -73,6 +151,15 @@ const splitQueryInSmallerBatches = async (
             const tempData = await handler(queryString, queryParams).then(
                 (r) => r.data?.[queryKey]
             );
+
+            if (tempData?.edges) {
+                tempData.edges = mappingEdgesSerializeAndExclude(
+                    tempData.edges,
+                    queryKey,
+                    mappingSerializer,
+                    exclude
+                );
+            }
 
             if (tempData?.pageInfo?.hasNextPage) {
                 currentPage = currentPage + 1;
@@ -98,8 +185,20 @@ const splitQueryInSmallerBatches = async (
         activity.setStatus(
             "[experimental] failed running queries in smaller batches, trying without batching"
         );
+
         // Fallback to general function from `runQueriesSequentially`
-        return await handler(queryString).then((r) => r.data?.[queryKey]);
+        const runQueriesSequentially = await handler(queryString).then(
+            (r) => r.data?.[queryKey]
+        );
+        if (runQueriesSequentially?.edges) {
+            runQueriesSequentially.edges = mappingEdgesSerializeAndExclude(
+                runQueriesSequentially.edges,
+                queryKey,
+                mappingSerializer,
+                exclude
+            );
+        }
+        return runQueriesSequentially;
     }
 };
 
@@ -111,6 +210,8 @@ const runQueriesSequentially = async (
     handler,
     activity,
     queryObject,
+    mapping,
+    exclude,
     splitQueryPageSize
 ) => {
     activity.setStatus("run queries sequentially");
@@ -140,12 +241,24 @@ const runQueriesSequentially = async (
                         handler,
                         activity,
                         item,
-                        splitQueryPageSize
+                        splitQueryPageSize,
+                        mapping?.[item.queryKey]?.serializer,
+                        exclude
                     );
             } else {
                 responsesObject[item.queryKey] = await handler(
                     item.queryString
                 ).then((r) => r.data?.[item.queryKey]);
+
+                if (responsesObject[item.queryKey]?.edges) {
+                    responsesObject[item.queryKey].edges =
+                        mappingEdgesSerializeAndExclude(
+                            responsesObject[item.queryKey].edges,
+                            item.queryKey,
+                            mapping?.[item.queryKey]?.serializer,
+                            exclude
+                        );
+                }
             }
 
             // wait 1 second before next call to prevent memory overload
@@ -164,83 +277,33 @@ const runQuery = async (
     { query, mapping, exclude, splitQueryPageSize }
 ) => {
     let sources;
-    if (typeof query === "object") {
+    const letRunSequentially = typeof query === "object";
+    if (letRunSequentially) {
         sources = await runQueriesSequentially(
             handler,
             activity,
             query,
+            mapping,
+            exclude,
             splitQueryPageSize
         );
     } else {
         sources = await handler(query).then((r) => r.data);
     }
 
-    Object.keys(sources).forEach((sourceKey) => {
-        // Check for custom serializer
-        if (typeof mapping?.[sourceKey]?.serializer === "function") {
-            if (sources[sourceKey] && Array.isArray(sources[sourceKey].edges)) {
-                const serializedEdges = mapping[sourceKey].serializer(
-                    sources[sourceKey].edges
+    // only if not ran sequentially - otherwise part of the sequential handling
+    if (!letRunSequentially) {
+        Object.keys(sources).forEach((sourceKey) => {
+            if (sources[sourceKey]?.edges) {
+                sources[sourceKey].edges = mappingEdgesSerializeAndExclude(
+                    sources[sourceKey].edges,
+                    sourceKey,
+                    mapping?.[sourceKey]?.serializer,
+                    exclude
                 );
-
-                if (!Array.isArray(serializedEdges)) {
-                    throw new Error(
-                        "Custom sitemap serializer must return an array"
-                    );
-                }
-                sources[sourceKey].edges = serializedEdges;
             }
-        }
-
-        // Removing excluded paths
-        if (sources[sourceKey]?.edges && sources[sourceKey].edges.length) {
-            sources[sourceKey].edges = sources[sourceKey].edges.filter(
-                ({ node }) =>
-                    !exclude.some((excludedRoute) => {
-                        const sourceType = node.__typename
-                            ? `all${node.__typename}`
-                            : sourceKey;
-                        const slug =
-                            sourceType === "allMarkdownRemark" ||
-                            sourceType === "allMdx" ||
-                            node?.fields?.slug
-                                ? node.fields.slug.replace(/^\/|\/$/, "")
-                                : node.slug.replace(/^\/|\/$/, "");
-
-                        excludedRoute =
-                            typeof excludedRoute === "function" ||
-                            typeof excludedRoute === "object"
-                                ? excludedRoute
-                                : excludedRoute.replace(/^\/|\/$/, "");
-
-                        if (typeof excludedRoute === "function") {
-                            // test if the passed excludedRoute is a function
-                            const isNodeExcluded = excludedRoute(node);
-                            return isNodeExcluded;
-                        } else if (typeof excludedRoute === "object") {
-                            // test if the passed excludedRoute is a regular expression
-                            let excludedRouteIsValidRegEx = true;
-                            try {
-                                new RegExp(excludedRoute);
-                            } catch (e) {
-                                excludedRouteIsValidRegEx = false;
-                            }
-
-                            if (!excludedRouteIsValidRegEx) {
-                                throw new Error(
-                                    "Excluded route is not a valid RegExp: ",
-                                    excludedRoute
-                                );
-                            }
-
-                            return excludedRoute.test(slug);
-                        } else {
-                            return slug.indexOf(excludedRoute) >= 0;
-                        }
-                    })
-            );
-        }
-    });
+        });
+    }
 
     return sources;
 };

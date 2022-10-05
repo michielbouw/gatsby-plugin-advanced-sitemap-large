@@ -55,6 +55,7 @@ const mappingEdgesSerializeAndExclude = (
     exclude
 ) => {
     let responseEdges = edges;
+
     // Check for custom serializer
     if (typeof mappingSerializer === "function") {
         if (responseEdges && Array.isArray(responseEdges)) {
@@ -117,6 +118,8 @@ const mappingEdgesSerializeAndExclude = (
                 })
         );
     }
+
+    return responseEdges;
 };
 
 /**
